@@ -50,23 +50,12 @@ def check_json_structural_indentation(text, lines):
         
         # Track which entry we're in based on depth
         # At depth 1, we're inside a top-level array entry
-        if is_array and depth == 1:
-            # Check if this line starts a new entry (opening brace at depth 1)
-            if stripped == '{' or stripped.startswith('{'):
-                # We're entering a new entry - count how many entries we've seen
-                # by counting previous opening braces at this depth
-                entry_count = 0
-                for prev_i in range(i - 1, 0, -1):
-                    prev_line = lines[prev_i - 1].strip()
-                    # Count opening braces that would be at depth 1
-                    if len(lines[prev_i - 1]) > 0 and lines[prev_i - 1][0] == '\t':
-                        if not lines[prev_i - 1].startswith('\t\t'):
-                            if prev_line == '{' or prev_line.startswith('{'):
-                                entry_count += 1
-                
-                current_entry_index = entry_count
-                if current_entry_index < len(data):
-                    current_entry_title = data[current_entry_index].get('title')
+        if is_array and depth == 1 and (stripped == '{' or stripped.startswith('{')):
+            current_entry_index = 0 if current_entry_index is None else current_entry_index + 1
+            if current_entry_index < len(data):
+                current_entry_title = data[current_entry_index].get('title')
+            else:
+                current_entry_title = None
         elif depth == 0:
             # Outside of any entry
             current_entry_index = None
@@ -185,33 +174,86 @@ def check_unicode_escapes(text, data):
     
     # Common Unicode escape patterns for Latin characters with diacritics (U+0000 to U+00FF)
     # These should be written directly, not escaped
-    # Note: Using \\u00XX pattern to specifically target Latin-1 characters
-    # which are commonly unnecessarily escaped (e.g., \\u00e7 for ç)
     unicode_escape_pattern = re.compile(r'\\u00[0-9a-fA-F]{2}')
     
     # Find all Unicode escape sequences - only proceed if any are found
     if not unicode_escape_pattern.search(text):
         return errors
     
-    # Try to identify which entries contain these escapes
-    if isinstance(data, list):
-        for entry_index, entry in enumerate(data):
-            entry_title = entry.get('title', 'Unknown')
-            # Find specific fields with escapes
-            fields_with_escapes = []
-            for key, value in entry.items():
-                if isinstance(value, str):
-                    # Only serialize to check for escapes if the value might contain them
-                    value_json = json.dumps(value, ensure_ascii=True)
-                    if unicode_escape_pattern.search(value_json):
-                        fields_with_escapes.append(key)
+    lines = text.split('\n')
+    depth = 0
+    in_string = False
+    escape_next = False
+    current_entry_index = None
+    current_entry_title = None
+    is_array = isinstance(data, list)
+    field_name_pattern = re.compile(r'^\s*"([^"]+)"\s*:')
+    
+    for i, line in enumerate(lines, 1):
+        if i == len(lines) and line == '':
+            continue
+        
+        stripped = line.strip()
+        if not stripped:
+            continue
+        
+        if is_array and depth == 1 and (stripped == '{' or stripped.startswith('{')):
+            current_entry_index = 0 if current_entry_index is None else current_entry_index + 1
+            if current_entry_index < len(data):
+                current_entry_title = data[current_entry_index].get('title')
+            else:
+                current_entry_title = None
+        elif depth == 0:
+            current_entry_index = None
+            current_entry_title = None
+        
+        if unicode_escape_pattern.search(line):
+            field_match = field_name_pattern.match(line)
+            field_name = field_match.group(1) if field_match else "unknown"
             
-            if fields_with_escapes:
+            if current_entry_index is not None and current_entry_title:
                 errors.append(
-                    f"ERROR: Entry #{entry_index} ('{entry_title}'): "
-                    f"Contains Unicode escape sequences in field(s): {', '.join(fields_with_escapes)}. "
+                    f"ERROR: Entry #{current_entry_index} ('{current_entry_title}'): "
+                    f"Line {i} contains Unicode escape sequences in field '{field_name}'. "
                     f"Use ensure_ascii=False in json.dump() to preserve special characters."
                 )
+            elif current_entry_index is not None:
+                errors.append(
+                    f"ERROR: Entry #{current_entry_index}: "
+                    f"Line {i} contains Unicode escape sequences in field '{field_name}'. "
+                    f"Use ensure_ascii=False in json.dump() to preserve special characters."
+                )
+            else:
+                errors.append(
+                    f"ERROR: Line {i} contains Unicode escape sequences. "
+                    f"Use ensure_ascii=False in json.dump() to preserve special characters."
+                )
+        
+        # Update depth
+        line_in_string = in_string
+        line_escape_next = escape_next
+        open_count = 0
+        close_count = 0
+        for char in stripped:
+            if line_escape_next:
+                line_escape_next = False
+                continue
+            if char == '\\':
+                line_escape_next = True
+                continue
+            if char == '"':
+                line_in_string = not line_in_string
+                continue
+            if not line_in_string:
+                if char == '{' or char == '[':
+                    open_count += 1
+                elif char == '}' or char == ']':
+                    close_count += 1
+        in_string = line_in_string
+        escape_next = line_escape_next
+        depth += (open_count - close_count)
+        if depth < 0:
+            depth = 0
     
     return errors
 
@@ -255,6 +297,8 @@ def check_editorconfig(json_file):
         
         # Track current entry while checking each line
         depth = 0
+        in_string = False
+        escape_next = False
         current_entry_index = None
         current_entry_title = None
         
@@ -265,20 +309,13 @@ def check_editorconfig(json_file):
             
             stripped = line.strip()
             
-            # Track which entry we're in based on depth (similar to structural check)
-            if is_array and data and depth == 1:
-                if stripped == '{' or stripped.startswith('{'):
-                    # Count entries seen so far
-                    entry_count = 0
-                    for prev_i in range(i - 1, 0, -1):
-                        prev_line = lines[prev_i - 1].strip()
-                        if len(lines[prev_i - 1]) > 0 and lines[prev_i - 1][0] == '\t':
-                            if not lines[prev_i - 1].startswith('\t\t'):
-                                if prev_line == '{' or prev_line.startswith('{'):
-                                    entry_count += 1
-                    current_entry_index = entry_count
-                    if current_entry_index < len(data):
-                        current_entry_title = data[current_entry_index].get('title')
+            # Track which entry we're in based on depth
+            if is_array and data and depth == 1 and (stripped == '{' or stripped.startswith('{')):
+                current_entry_index = 0 if current_entry_index is None else current_entry_index + 1
+                if current_entry_index < len(data):
+                    current_entry_title = data[current_entry_index].get('title')
+                else:
+                    current_entry_title = None
             elif depth == 0:
                 current_entry_index = None
                 current_entry_title = None
@@ -304,8 +341,33 @@ def check_editorconfig(json_file):
             # Update depth for entry tracking
             if not stripped:
                 continue
-            open_count = stripped.count('{') + stripped.count('[')
-            close_count = stripped.count('}') + stripped.count(']')
+            
+            line_in_string = in_string
+            line_escape_next = escape_next
+            open_count = 0
+            close_count = 0
+            
+            for char in stripped:
+                if line_escape_next:
+                    line_escape_next = False
+                    continue
+                
+                if char == '\\':
+                    line_escape_next = True
+                    continue
+                
+                if char == '"':
+                    line_in_string = not line_in_string
+                    continue
+                
+                if not line_in_string:
+                    if char == '{' or char == '[':
+                        open_count += 1
+                    elif char == '}' or char == ']':
+                        close_count += 1
+            
+            in_string = line_in_string
+            escape_next = line_escape_next
             depth += (open_count - close_count)
             if depth < 0:
                 depth = 0

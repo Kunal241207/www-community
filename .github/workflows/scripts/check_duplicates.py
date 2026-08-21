@@ -13,6 +13,7 @@ import json
 import sys
 import re
 from collections import defaultdict
+from urllib.parse import urlsplit, urlunsplit
 
 
 def normalize_title(title):
@@ -40,16 +41,27 @@ def normalize_url(url):
     """
     Normalize URL for duplicate detection.
     - Remove trailing slashes
-    - Convert to lowercase (domain is case-insensitive)
+    - Convert scheme and host/domain to lowercase (scheme and domain are case-insensitive)
     
     This helps detect URLs like:
     - "https://example.com/" vs "https://example.com"
+    - "HTTPS://EXAMPLE.COM/path" vs "https://example.com/path"
     """
     if not url:
         return ""
     # Remove trailing slash
-    normalized = url.rstrip('/')
-    return normalized
+    trimmed = url.rstrip('/')
+    try:
+        parsed = urlsplit(trimmed)
+        return urlunsplit((
+            parsed.scheme.lower(),
+            parsed.netloc.lower(),
+            parsed.path,
+            parsed.query,
+            parsed.fragment
+        ))
+    except Exception:
+        return trimmed
 
 
 def check_duplicates(json_file):
