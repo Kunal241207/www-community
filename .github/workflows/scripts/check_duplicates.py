@@ -3,11 +3,12 @@
 Check if tools.json contains duplicate entries.
 Detects duplicates by:
 - Title (case-insensitive, normalized)
-- URL (normalized - trailing slashes removed)
+- URL (normalized - trailing slashes removed, scheme and host lowercased)
 
 Normalization helps detect similar entries like:
 - "FindSecBugs" vs "Find Security Bugs"
 - "https://example.com/" vs "https://example.com"
+- "HTTPS://EXAMPLE.COM/path" vs "https://example.com/path"
 """
 import json
 import sys
@@ -122,7 +123,7 @@ def check_duplicates(json_file):
         # Check for duplicate URLs (normalized)
         duplicate_urls = {norm: entries for norm, entries in normalized_urls_map.items() if len(entries) > 1}
         if duplicate_urls:
-            print("ERROR: Found duplicate URLs (normalized - trailing slashes removed)\n")
+            print("ERROR: Found duplicate URLs (normalized - trailing slashes removed, scheme and host lowercased)\n")
             for normalized, entries in sorted(duplicate_urls.items()):
                 # Check if all URLs are exactly the same or just normalized-same
                 original_urls = set(url for _, url in entries)
@@ -130,7 +131,7 @@ def check_duplicates(json_file):
                     print(f"Exact duplicate URL '{entries[0][1]}' appears {len(entries)} times:")
                 else:
                     urls_list = ', '.join(f"'{url}'" for _, url in entries)
-                    print(f"Similar URLs detected (differ only in trailing slashes):")
+                    print(f"Similar URLs detected (normalized to the same URL):")
                     print(f"  Variations: {urls_list}")
                 
                 for idx, original_url in entries:
